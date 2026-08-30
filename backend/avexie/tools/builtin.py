@@ -8,12 +8,13 @@ IMPORTANT: DO NOT IMPORT THIS MODULE DIRECTLY IN OTHER PARTS OF THE CODEBASE.
 
 import asyncio
 import logging
+import math
 import time
 from typing import Literal, Optional
 
 from fastapi import HTTPException, Request
 
-from avexie.config import RAG_EMBEDDING_QUERY_PREFIX
+from avexie.config import RAG_EMBEDDING_CONTENT_PREFIX, RAG_EMBEDDING_QUERY_PREFIX
 from avexie.env import (
     KNOWLEDGE_GREP_MAX_MATCHES,
     VIEW_FILE_DEFAULT_MAX_CHARS,
@@ -2952,7 +2953,6 @@ async def query_knowledge_files(
         from avexie.models.files import Files
         from avexie.models.knowledge import Knowledges
         from avexie.models.notes import Notes
-        from avexie.retrieval.external import retrieve_external_knowledge
         from avexie.retrieval.utils import query_collection
 
         user_id = __user__.get('id')
@@ -2965,7 +2965,6 @@ async def query_knowledge_files(
         user_model = UserModel(**__user__)
 
         collection_names = []
-        external_knowledges = []
         note_results = []  # Notes aren't vectorized, handle separately
 
         # If model has attached knowledge, use those
@@ -2988,9 +2987,8 @@ async def query_knowledge_files(
                             user_group_ids=set(user_group_ids),
                         )
                     ):
-                        if (knowledge.meta or {}).get('source') == 'external':
-                            external_knowledges.append(knowledge)
-                        else:
+                        # Sovereign retrieval never calls remote knowledge sources.
+                        if (knowledge.meta or {}).get('source') != 'external':
                             collection_names.append(item_id)
 
                 elif item_type == 'file':
@@ -3037,9 +3035,7 @@ async def query_knowledge_files(
                         user_group_ids=set(user_group_ids),
                     )
                 ):
-                    if (knowledge.meta or {}).get('source') == 'external':
-                        external_knowledges.append(knowledge)
-                    else:
+                    if (knowledge.meta or {}).get('source') != 'external':
                         collection_names.append(knowledge_id)
         else:
             # No model knowledge and no specific IDs - search all accessible KBs
@@ -3054,9 +3050,7 @@ async def query_knowledge_files(
                 limit=50,
             )
             for knowledge_base in result.items:
-                if (knowledge_base.meta or {}).get('source') == 'external':
-                    external_knowledges.append(knowledge_base)
-                else:
+                if (knowledge_base.meta or {}).get('source') != 'external':
                     collection_names.append(knowledge_base.id)
 
         chunks = []
@@ -3066,12 +3060,13 @@ async def query_knowledge_files(
 
         # Query vector collections if any
         if collection_names:
+            candidate_count = min(max(count * 3, 10), 30)
             query_results = await query_collection(
                 __request__,
                 collection_names=collection_names,
                 queries=[query],
                 embedding_function=lambda queries, prefix: embedding_function(queries, prefix=prefix, user=user_model),
-                k=count,
+                k=candidate_count,
             )
 
             if query_results and 'documents' in query_results:
@@ -3089,33 +3084,52 @@ async def query_knowledge_files(
                         chunk_info['distance'] = distances[idx]
                     chunks.append(chunk_info)
 
-        for knowledge in external_knowledges:
-            query_results = await retrieve_external_knowledge(
-                __request__,
-                knowledge,
-                queries=[query],
-                count=count,
+        # Normalize and deduplicate before local semantic reranking. This avoids
+        # repeated adjacent chunks crowding out distinct evidence.
+        deduplicated = []
+        seen_content = set()
+        for chunk in chunks:
+            content = ' '.join(str(chunk.get('content', '')).split())
+            key = content.casefold()
+            if not content or key in seen_content:
+                continue
+            seen_content.add(key)
+            chunk['content'] = content
+            deduplicated.append(chunk)
+
+        if deduplicated:
+            query_vectors = await embedding_function(
+                query, prefix=RAG_EMBEDDING_QUERY_PREFIX, user=user_model
+            )
+            document_vectors = await embedding_function(
+                [chunk['content'] for chunk in deduplicated],
+                prefix=RAG_EMBEDDING_CONTENT_PREFIX,
                 user=user_model,
             )
-            documents = query_results.get('documents', [[]])[0]
-            metadatas = query_results.get('metadatas', [[]])[0]
-            distances = query_results.get('distances', [[]])[0]
+            if hasattr(query_vectors, 'tolist'):
+                query_vectors = query_vectors.tolist()
+            if hasattr(document_vectors, 'tolist'):
+                document_vectors = document_vectors.tolist()
+            query_vector = query_vectors[0] if query_vectors and isinstance(query_vectors[0], (list, tuple)) else query_vectors
 
-            for idx, doc in enumerate(documents):
-                metadata = metadatas[idx] if idx < len(metadatas) else {}
-                chunk_info = {
-                    'content': doc,
-                    'source': metadata.get('source', metadata.get('name', knowledge.name)),
-                    'file_id': metadata.get('file_id', f'external-{knowledge.id}'),
-                    'type': 'external',
-                    'knowledge_id': knowledge.id,
-                }
-                if idx < len(distances):
-                    chunk_info['distance'] = distances[idx]
-                chunks.append(chunk_info)
+            def cosine_similarity(left, right):
+                dot = sum(float(a) * float(b) for a, b in zip(left, right))
+                left_norm = math.sqrt(sum(float(value) ** 2 for value in left))
+                right_norm = math.sqrt(sum(float(value) ** 2 for value in right))
+                return dot / (left_norm * right_norm) if left_norm and right_norm else 0.0
 
-        # Limit to requested count
-        chunks = chunks[:count]
+            for chunk, vector in zip(deduplicated, document_vectors):
+                chunk['relevance_score'] = round(cosine_similarity(query_vector, vector), 6)
+
+            configured_threshold = await Config.get('rag.relevance_threshold', 0.0)
+            relevance_threshold = max(float(configured_threshold or 0.0), 0.15)
+            chunks = sorted(
+                (chunk for chunk in deduplicated if chunk['relevance_score'] >= relevance_threshold),
+                key=lambda chunk: chunk['relevance_score'],
+                reverse=True,
+            )[:count]
+        else:
+            chunks = []
 
         return JSONCodec.dumps(chunks, ensure_ascii=False)
     except Exception as e:

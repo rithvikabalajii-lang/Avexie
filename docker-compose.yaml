@@ -46,6 +46,8 @@ services:
       - 'DO_NOT_TRACK=true'
       - 'ANONYMIZED_TELEMETRY=false'
       - 'WEBUI_SECRET_KEY='
+      # Keep JWT/OAuth encryption stable across container recreation.
+      - 'WEBUI_SECRET_KEY_FILE=/app/backend/data/.webui_secret_key'
       # --- BEGIN: sandbox (Judge0) — Codex ---
       - 'JUDGE0_URL=http://judge0:2358'
       # --- END: sandbox ---

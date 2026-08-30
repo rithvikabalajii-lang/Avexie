@@ -90,11 +90,7 @@
 		>
 			<div>
 				<div class=" capitalize line-clamp-1" in:fade={{ duration: 200 }}>
-					{#if models[selectedModelIdx]?.name}
-						{models[selectedModelIdx]?.name}
-					{:else}
-						{$i18n.t('Hello, {{name}}', { name: $user?.name })}
-					{/if}
+					{$i18n.t('Hello, {{name}}', { name: $user?.name || $i18n.t('there') })}
 				</div>
 
 				<div in:fade={{ duration: 200, delay: 200 }}>
@@ -114,9 +110,7 @@
 							<div class="mt-0.5 text-sm font-normal text-gray-400 dark:text-gray-500">
 								By
 								{#if models[selectedModelIdx]?.info?.meta?.user.community}
-									<a
-										href="#/m/{models[selectedModelIdx]?.info?.meta?.user
-											.username}"
+									<a href="#/m/{models[selectedModelIdx]?.info?.meta?.user.username}"
 										>{models[selectedModelIdx]?.info?.meta?.user.name
 											? models[selectedModelIdx]?.info?.meta?.user.name
 											: `@${models[selectedModelIdx]?.info?.meta?.user.username}`}</a
@@ -136,14 +130,7 @@
 		</div>
 
 		<div class=" w-full" in:fade={{ duration: 200, delay: 300 }}>
-			<Suggestions
-				className="grid grid-cols-2"
-				suggestionPrompts={atSelectedModel?.info?.meta?.suggestion_prompts ??
-					models[selectedModelIdx]?.info?.meta?.suggestion_prompts ??
-					$config?.default_prompt_suggestions ??
-					[]}
-				{onSelect}
-			/>
+			<Suggestions className="grid grid-cols-2" suggestionPrompts={[]} {onSelect} />
 		</div>
 	</div>
 {/key}

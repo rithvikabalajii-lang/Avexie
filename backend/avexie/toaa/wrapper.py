@@ -60,39 +60,51 @@ async def toaa_wrap(
             user_id=user_id,
             requires_approval=requires_approval,
         )
-    except Exception:
+    except Exception as exc:
         log.exception('TOAA: failed to insert pending audit row for %s', tool_name)
+        raise RuntimeError(f'TOAA audit unavailable; blocked tool execution: {tool_name}') from exc
 
-    if audit_record and requires_approval:
-        await ToaaAudit.complete(
+    # Fail closed.  A tool must never execute unless its immutable pending row
+    # already exists in durable storage.
+    if audit_record is None:
+        raise RuntimeError(f'TOAA audit unavailable; blocked tool execution: {tool_name}')
+
+    if requires_approval:
+        completed = await ToaaAudit.complete(
             audit_record.id,
             status='blocked',
             error_detail='Approval required (not yet implemented)',
         )
+        if completed is None:
+            raise RuntimeError(f'TOAA audit finalization failed for tool: {tool_name}')
         return {'error': f'Tool {tool_name} requires approval (not yet implemented)'}
 
     try:
         result = await tool_fn(**tool_input)
     except Exception as e:
-        if audit_record:
-            try:
-                await ToaaAudit.complete(
-                    audit_record.id,
-                    status='error',
-                    error_detail=str(e)[:5_000],
-                )
-            except Exception:
-                log.exception('TOAA: failed to record error for audit row %s', audit_record.id)
+        try:
+            completed = await ToaaAudit.complete(
+                audit_record.id,
+                status='error',
+                error_detail=str(e)[:5_000],
+            )
+            if completed is None:
+                raise RuntimeError('TOAA completion returned no record')
+        except Exception as audit_exc:
+            log.exception('TOAA: failed to record error for audit row %s', audit_record.id)
+            raise RuntimeError(f'TOAA audit finalization failed for tool: {tool_name}') from audit_exc
         raise
 
-    if audit_record:
-        try:
-            await ToaaAudit.complete(
-                audit_record.id,
-                status='success',
-                tool_output=_safe_output(result),
-            )
-        except Exception:
-            log.exception('TOAA: failed to record success for audit row %s', audit_record.id)
+    try:
+        completed = await ToaaAudit.complete(
+            audit_record.id,
+            status='success',
+            tool_output=_safe_output(result),
+        )
+    except Exception as exc:
+        log.exception('TOAA: failed to record success for audit row %s', audit_record.id)
+        raise RuntimeError(f'TOAA audit finalization failed for tool: {tool_name}') from exc
+    if completed is None:
+        raise RuntimeError(f'TOAA audit finalization failed for tool: {tool_name}')
 
     return result

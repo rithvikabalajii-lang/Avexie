@@ -3042,6 +3042,38 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     tools_dict[name] = tool_dict
 
         if tools_dict:
+            native_tool_policy = []
+            if 'query_knowledge_files' in tools_dict:
+                native_tool_policy.append(
+                    'Knowledge retrieval is selective. Call query_knowledge_files only when the request '
+                    'requires organization-specific facts that are not already present in the conversation '
+                    'or attached files. Do not query it for greetings, general knowledge, writing that needs '
+                    'no internal facts, or every turn by default. Use a focused query and rely only on relevant '
+                    'returned passages; do not claim knowledge grounding unless the tool was actually called.'
+                )
+            if 'create_tasks' in tools_dict and 'update_task' in tools_dict:
+                native_tool_policy.append(
+                    'For a genuine multi-step task or requested deliverable, call create_tasks before the '
+                    'first execution tool. Keep exactly one current step in_progress, update each step only '
+                    'after real work occurs, and do not mark unexecuted work complete. Include verification '
+                    'as the final step. Do not create a checklist for simple conversational answers.'
+                )
+            if any(name in tools_dict for name in (
+                'run_code', 'generate_word_document', 'create_local_text_file',
+                'read_local_text_file', 'edit_local_text_file',
+            )):
+                native_tool_policy.append(
+                    'Use available local tools automatically when they are needed to complete the request; '
+                    'the user does not need to enable an agentic mode. Never say a file, code run, or artifact '
+                    'was completed unless the corresponding tool returned success.'
+                )
+            if native_tool_policy:
+                form_data['messages'] = add_or_update_system_message(
+                    '<native_tool_policy>\n' + '\n\n'.join(native_tool_policy) + '\n</native_tool_policy>',
+                    form_data['messages'],
+                    append=True,
+                )
+
             # Always store resolved tools in metadata so downstream consumers
             # (e.g. pipe functions) can access all tools including MCP and builtins.
             metadata['tools'] = tools_dict
@@ -3063,54 +3095,10 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                 except Exception as e:
                     log.exception(e)
 
-    # Check if file context extraction is enabled for this model (default True)
-    # Sovereign KB grounding: every UI agent turn searches the user's accessible
-    # local Chroma collections, even when a KB was not manually attached.
-    if metadata.get('session_id') and prompt and not metadata.get('automation_id'):
-        try:
-            from avexie.tools.builtin import query_knowledge_files
-
-            grounded_json = await query_knowledge_files(
-                query=prompt,
-                count=5,
-                __request__=request,
-                __user__=extra_params.get('__user__'),
-                __model_knowledge__=get_attached_knowledge(model, metadata),
-            )
-            grounded_chunks = JSONCodec.loads(grounded_json)
-            if isinstance(grounded_chunks, list) and grounded_chunks:
-                for chunk in grounded_chunks:
-                    if not isinstance(chunk, dict) or not chunk.get('content'):
-                        continue
-                    sources.append(
-                        {
-                            'source': {
-                                'name': chunk.get('source', 'Knowledge Base'),
-                                'id': chunk.get('file_id', ''),
-                            },
-                            'document': [chunk['content']],
-                            'metadata': [
-                                {
-                                    'file_id': chunk.get('file_id', ''),
-                                    'distance': chunk.get('distance'),
-                                    'vector_db': 'chroma',
-                                }
-                            ],
-                        }
-                    )
-                await event_emitter(
-                    {
-                        'type': 'status',
-                        'data': {
-                            'action': 'knowledge_grounding',
-                            'description': f'Grounded in {len(grounded_chunks)} local Chroma result(s)',
-                            'done': True,
-                        },
-                    }
-                )
-        except Exception:
-            log.exception('Automatic local knowledge grounding failed; continuing without KB context')
-
+    # Check if file context extraction is enabled for this model (default True).
+    # Knowledge retrieval is intentionally NOT performed here.  Chroma is
+    # exposed as a native audited tool and the model invokes it only when the
+    # current task lacks required organization-specific context.
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
     if file_context_enabled:

@@ -98,7 +98,14 @@ from avexie.tools.builtin import (
 )
 # --- BEGIN: sandbox (Judge0) — Codex ---
 from avexie.tools.run_code import run_code
-from avexie.tools.documents import generate_word_document
+from avexie.tools.documents import (
+    create_local_text_file,
+    edit_local_text_file,
+    generate_word_document,
+    list_local_files,
+    read_local_text_file,
+    share_local_file,
+)
 
 # --- END: sandbox ---
 from avexie.utils.access_control import has_access, has_connection_access, has_permission
@@ -693,6 +700,16 @@ async def get_builtin_tools(
         builtin_functions.append(run_code)
     if is_builtin_tool_enabled('documents'):
         builtin_functions.append(generate_word_document)
+    if is_builtin_tool_enabled('files') and await has_user_chat_permission('file_upload'):
+        builtin_functions.extend(
+            [
+                create_local_text_file,
+                read_local_text_file,
+                edit_local_text_file,
+                list_local_files,
+                share_local_file,
+            ]
+        )
     # --- END: sandbox ---
 
     # Notes tools - search, view, create, and update user's notes
