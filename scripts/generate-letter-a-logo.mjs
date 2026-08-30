@@ -3,23 +3,22 @@ import path from 'node:path';
 import sharp from 'sharp';
 
 const root = path.resolve(import.meta.dirname, '..');
+const extractedArtworkPath = path.join(root, 'branding/ax-logo-transparent.png');
 
-const mark = (
-  foreground = '#f8fafc',
-  accent = '#c8a96b',
-  background = '#0b1220'
-) => Buffer.from(`
-<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
-  <rect x="36" y="36" width="440" height="440" rx="112" fill="${background}"/>
-  <path d="M108 382 L202 130 L292 382 M150 292 H251" fill="none"
-        stroke="${foreground}" stroke-width="43" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M304 146 L404 366 M404 146 L304 366" fill="none"
-        stroke="${accent}" stroke-width="43" stroke-linecap="round"/>
-</svg>`);
+async function png(size) {
+  const inset = Math.round(size * 0.86);
+  const artwork = await sharp(extractedArtworkPath)
+    .resize(inset, inset, {
+      fit: 'contain',
+      background: { r: 0, g: 0, b: 0, alpha: 0 }
+    })
+    .png()
+    .toBuffer();
 
-async function png(size, dark = false) {
-  return sharp(dark ? mark('#0b1220', '#8a6b35', '#f8fafc') : mark())
-    .resize(size, size)
+  return sharp({
+    create: { width: size, height: size, channels: 4, background: '#ffffff' }
+  })
+    .composite([{ input: artwork, gravity: 'centre' }])
     .png()
     .toBuffer();
 }
@@ -39,9 +38,15 @@ function icoFromPng(image) {
 }
 
 const directories = ['static/static', 'backend/avexie/static'];
+const svgPng = await png(512);
+const embeddedSvg = Buffer.from(`
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <image width="512" height="512" href="data:image/png;base64,${svgPng.toString('base64')}"/>
+</svg>`);
+
 for (const directory of directories) {
   const target = path.join(root, directory);
-  await fs.writeFile(path.join(target, 'favicon.svg'), mark());
+  await fs.writeFile(path.join(target, 'favicon.svg'), embeddedSvg);
   await fs.writeFile(path.join(target, 'favicon.png'), await png(512));
   await fs.writeFile(path.join(target, 'favicon-96x96.png'), await png(96));
   await fs.writeFile(path.join(target, 'apple-touch-icon.png'), await png(180));
@@ -49,7 +54,7 @@ for (const directory of directories) {
   await fs.writeFile(path.join(target, 'web-app-manifest-512x512.png'), await png(512));
   await fs.writeFile(path.join(target, 'logo.png'), await png(500));
   await fs.writeFile(path.join(target, 'splash.png'), await png(500));
-  await fs.writeFile(path.join(target, 'splash-dark.png'), await png(500, true));
+  await fs.writeFile(path.join(target, 'splash-dark.png'), await png(500));
   await fs.writeFile(path.join(target, 'favicon.ico'), icoFromPng(await png(32)));
 }
 
