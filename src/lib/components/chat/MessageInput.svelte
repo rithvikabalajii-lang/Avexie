@@ -2517,8 +2517,8 @@
 								</div>
 
 								<div class="self-end flex space-x-1 mr-1 min-w-0 gap-[0.03125rem]">
-									<!-- AVEXIE ROUTER: model selection is handled server-side; selector hidden from UI -->
-									<div class="hidden" aria-hidden="true">
+									<!-- AVEXIE ROUTER: manual selection appears only when override is enabled. -->
+									<div class={$settings?.modelRoutingOverride ? '' : 'hidden'} aria-hidden={!$settings?.modelRoutingOverride}>
 										<ModelSelector
 											bind:this={modelSelector}
 											bind:selectedModels
@@ -2528,6 +2528,14 @@
 											triggerClassName="items-center gap-1.5 rounded-lg pl-2 pr-1.5 py-1 text-[0.8125rem] font-normal text-gray-600 transition-colors duration-100 hover:bg-gray-50/40 hover:text-gray-700 dark:text-gray-300 dark:hover:bg-gray-800/40 dark:hover:text-gray-200"
 										/>
 									</div>
+									<button
+										type="button"
+										class="hidden sm:flex h-7 items-center rounded-lg px-2 text-[0.65rem] {$settings?.modelRoutingOverride ? 'bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-200' : 'text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-800'}"
+										on:click={() => settings.update((value) => ({ ...value, modelRoutingOverride: !value?.modelRoutingOverride }))}
+										title="Toggle automatic local model routing"
+									>
+										{$settings?.modelRoutingOverride ? 'Manual model' : 'Auto route'}
+									</button>
 
 									{#if hasChatVariables}
 										<Tooltip content={$i18n.t('Chat Variables')} placement="top">

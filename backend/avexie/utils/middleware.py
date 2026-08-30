@@ -3064,6 +3064,53 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     log.exception(e)
 
     # Check if file context extraction is enabled for this model (default True)
+    # Sovereign KB grounding: every UI agent turn searches the user's accessible
+    # local Chroma collections, even when a KB was not manually attached.
+    if metadata.get('session_id') and prompt and not metadata.get('automation_id'):
+        try:
+            from avexie.tools.builtin import query_knowledge_files
+
+            grounded_json = await query_knowledge_files(
+                query=prompt,
+                count=5,
+                __request__=request,
+                __user__=extra_params.get('__user__'),
+                __model_knowledge__=get_attached_knowledge(model, metadata),
+            )
+            grounded_chunks = JSONCodec.loads(grounded_json)
+            if isinstance(grounded_chunks, list) and grounded_chunks:
+                for chunk in grounded_chunks:
+                    if not isinstance(chunk, dict) or not chunk.get('content'):
+                        continue
+                    sources.append(
+                        {
+                            'source': {
+                                'name': chunk.get('source', 'Knowledge Base'),
+                                'id': chunk.get('file_id', ''),
+                            },
+                            'document': [chunk['content']],
+                            'metadata': [
+                                {
+                                    'file_id': chunk.get('file_id', ''),
+                                    'distance': chunk.get('distance'),
+                                    'vector_db': 'chroma',
+                                }
+                            ],
+                        }
+                    )
+                await event_emitter(
+                    {
+                        'type': 'status',
+                        'data': {
+                            'action': 'knowledge_grounding',
+                            'description': f'Grounded in {len(grounded_chunks)} local Chroma result(s)',
+                            'done': True,
+                        },
+                    }
+                )
+        except Exception:
+            log.exception('Automatic local knowledge grounding failed; continuing without KB context')
+
     file_context_enabled = (model.get('info', {}).get('meta', {}).get('capabilities') or {}).get('file_context', True)
 
     if file_context_enabled:

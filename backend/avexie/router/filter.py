@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from typing import Any, Literal, Tuple, TypedDict
 
@@ -32,7 +33,7 @@ class RouteDecision(TypedDict):
     lane: Literal["reasoning", "coding", "vision", "extraction", "summarization", "general"]
     model_tag: str          # live model_id as returned by Ollama /api/tags
     signal: str             # human-readable debug string — do NOT parse programmatically
-    confidence: Literal["deterministic"]
+    confidence: Literal["deterministic", "local-llm"]
 
 # ---------------------------------------------------------------------------
 # Capability inference — purely from model name / details.family
@@ -51,6 +52,30 @@ def _capability(model_id: str, family: str = "") -> str:
     if _REASONING_RE.search(src):
         return "reasoning"
     return "general"
+
+
+def analyze_model(model_id: str, entry: dict | None = None) -> dict:
+    """Build the task profile shown in Workspace → Models and used by routing."""
+    entry = entry or {}
+    details = entry.get("details") or {}
+    capability = _capability(model_id, details.get("family", ""))
+    tags = {capability}
+    if capability == "general":
+        tags.update({"summarization", "extraction", "chat"})
+    if capability == "vision":
+        tags.update({"image-understanding", "scanned-documents", "multimodal"})
+    if capability == "coding":
+        tags.update({"code-generation", "debugging", "sandbox"})
+    if capability == "reasoning":
+        tags.update({"planning", "analysis"})
+    return {
+        "id": model_id,
+        "family": details.get("family") or "unknown",
+        "parameter_size": details.get("parameter_size") or "unknown",
+        "quantization": details.get("quantization_level") or "unknown",
+        "primary_capability": capability,
+        "routing_tags": sorted(tags),
+    }
 
 # ---------------------------------------------------------------------------
 # Prompt intent classification — deterministic regex / heuristics
@@ -103,6 +128,43 @@ def _classify_intent(text: str) -> str:
 
     return "general"
 
+
+async def _classify_with_local_model(text: str, available: dict) -> str | None:
+    """Use the smallest installed Ollama model as the lightweight router."""
+    if not text.strip() or not available or os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+    candidates = sorted(
+        available.items(),
+        key=lambda pair: _parse_param_size((pair[1].get("details") or {}).get("parameter_size")),
+    )
+    classifier_id = candidates[0][0]
+    try:
+        from avexie.models.config import Config
+
+        urls = await Config.get("ollama.base_urls") or ["http://ollama:11434"]
+        base_url = str(urls[0]).rstrip("/")
+        if not base_url.startswith(("http://ollama:", "http://localhost:", "http://127.0.0.1:")):
+            return None
+        payload = {
+            "model": classifier_id,
+            "stream": False,
+            "keep_alive": "5m",
+            "prompt": (
+                "Classify the task into exactly one word: coding, reasoning, extraction, "
+                "summarization, or general. Return only that word.\n\nTask:\n" + text[:8000]
+            ),
+            "options": {"temperature": 0},
+        }
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(f"{base_url}/api/generate", json=payload) as response:
+                data = await response.json()
+        lane = str(data.get("response", "")).strip().lower().split()[0].strip(".,:;\"'")
+        return lane if lane in {"coding", "reasoning", "extraction", "summarization", "general"} else None
+    except Exception:
+        log.warning("[ROUTER] Local classifier unavailable; using deterministic fallback", exc_info=True)
+        return None
+
 # ---------------------------------------------------------------------------
 # Parameter-size parsing helpers
 # ---------------------------------------------------------------------------
@@ -130,17 +192,19 @@ def _parse_param_size(raw: str | None) -> float:
 
 async def _resolve_default_model(request: Any, available: dict) -> str:
     """
-    1. Try Config table key 'default_models'.
+    1. Try the UI default model setting.
     2. Fall back to first key in available.
     3. Hard-stop: 'llama3:latest'.
     """
     try:
         from avexie.models.config import Config  # type: ignore
-        default = await Config.get("default_models")
+        default = await Config.get("ui.default_models")
         if default and isinstance(default, list) and default[0] in available:
             return default[0]
-        if default and isinstance(default, str) and default in available:
-            return default
+        if default and isinstance(default, str):
+            first = default.split(",", 1)[0].strip()
+            if first in available:
+                return first
     except Exception:
         pass
 
@@ -188,6 +252,21 @@ async def model_router_filter(
 
     default_model_id = await _resolve_default_model(request, available)
 
+    # Explicit per-request escape hatch. The frontend hides manual selection
+    # unless the user enables this override.
+    manual_override = bool(body.pop("router_override", False))
+    requested_model = body.get("model")
+    if manual_override and requested_model in available:
+        decision = RouteDecision(
+            lane="general",
+            model_tag=requested_model,
+            signal="manual_override",
+            confidence="deterministic",
+        )
+        _emit_log(decision)
+        await _emit_route_event(extra_params, decision)
+        return _apply_decision(body, extra_params, decision, request, model, available, default_model_id)
+
     # Step 1: Hard filter — image / video attachments
     files = body.get("files", [])
     has_media = False
@@ -216,10 +295,13 @@ async def model_router_filter(
     is_long_prompt = len(last_user_text) > _LONG_PROMPT_CHARS
 
     # Step 2: Classify intent
+    used_local_classifier = False
     if has_media:
         intent = "vision"
     else:
-        intent = _classify_intent(last_user_text)
+        intent = await _classify_with_local_model(last_user_text, available)
+        used_local_classifier = intent is not None
+        intent = intent or _classify_intent(last_user_text)
 
     # Step 3: Narrow candidates by inferred capability
     intent_to_capability = {
@@ -260,6 +342,7 @@ async def model_router_filter(
             confidence="deterministic",
         )
         _emit_log(decision)
+        await _emit_route_event(extra_params, decision)
         return _apply_decision(body, extra_params, decision, request, model, available, default_model_id)
 
     # Step 4: Tie-break by parameter_size
@@ -279,9 +362,10 @@ async def model_router_filter(
         lane=intent,
         model_tag=chosen_id,
         signal=signal,
-        confidence="deterministic",
+        confidence="local-llm" if used_local_classifier else "deterministic",
     )
     _emit_log(decision)
+    await _emit_route_event(extra_params, decision)
     return _apply_decision(body, extra_params, decision, request, model, available, default_model_id)
 
 
@@ -297,6 +381,27 @@ def _emit_log(decision: RouteDecision) -> None:
         decision["signal"],
         decision["confidence"],
     )
+
+
+async def _emit_route_event(extra_params: dict, decision: RouteDecision) -> None:
+    emitter = extra_params.get("__event_emitter__")
+    if not emitter:
+        return
+    try:
+        await emitter(
+            {
+                "type": "status",
+                "data": {
+                    "action": "model_routing",
+                    "description": f"Routed to {decision['model_tag']} ({decision['lane']})",
+                    "model": decision["model_tag"],
+                    "lane": decision["lane"],
+                    "done": True,
+                },
+            }
+        )
+    except Exception:
+        log.debug("Could not emit route decision event", exc_info=True)
 
 
 def _apply_decision(

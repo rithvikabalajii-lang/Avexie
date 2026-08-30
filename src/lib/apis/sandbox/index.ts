@@ -26,6 +26,13 @@ export type RunCodeResult = {
 	memory_kb?: number | null;
 };
 
+export type IdeAgentResult = {
+	model: string;
+	summary: string;
+	edits: { path: string; content: string }[];
+	network: { endpoint: string; external_calls: number };
+};
+
 export const executeSandboxCode = async (
 	token: string,
 	payload: RunCodeRequest
@@ -44,5 +51,24 @@ export const executeSandboxCode = async (
 		throw new Error(body?.detail ?? `Sandbox request failed with HTTP ${response.status}`);
 	}
 
+	return response.json();
+};
+
+export const requestIdeEdits = async (
+	token: string,
+	payload: { prompt: string; active_path: string; files: { path: string; content: string }[] }
+): Promise<IdeAgentResult> => {
+	const response = await fetch(`${WEBUI_API_BASE_URL}/sandbox/ide-agent`, {
+		method: 'POST',
+		headers: {
+			Authorization: `Bearer ${token}`,
+			'Content-Type': 'application/json'
+		},
+		body: JSON.stringify(payload)
+	});
+	if (!response.ok) {
+		const body = await response.json().catch(() => ({}));
+		throw new Error(body?.detail ?? `IDE agent failed with HTTP ${response.status}`);
+	}
 	return response.json();
 };

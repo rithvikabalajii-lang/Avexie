@@ -1484,6 +1484,13 @@ async def chat_completion(
         try:
             form_data, metadata, events = await process_chat_payload(request, form_data, user, metadata, model)
 
+            # Filters may route the request to a different local model.  Carry
+            # that concrete model through response persistence and events so
+            # the UI's route status and the saved assistant turn agree.
+            routed_model_id = metadata.get('selected_model_id')
+            if routed_model_id:
+                model = request.app.state.MODELS.get(routed_model_id, model)
+
             if await drain_approved_tool_calls(request, form_data, user, model, metadata):
                 return {'status': True, 'chat_id': metadata.get('chat_id'), 'paused': True}
 

@@ -7,6 +7,8 @@ services:
     tty: true
     restart: unless-stopped
     image: ollama/ollama:${OLLAMA_DOCKER_TAG-latest}
+    networks:
+      - sovereign_internal
 
   avexie:
     build:
@@ -14,6 +16,20 @@ services:
       dockerfile: Dockerfile
     image: ghcr.io/avexie/avexie:${WEBUI_DOCKER_TAG-main}
     container_name: avexie
+    cap_add:
+      - NET_ADMIN
+    command:
+      - bash
+      - -c
+      - >-
+        iptables -P OUTPUT DROP &&
+        iptables -A OUTPUT -o lo -j ACCEPT &&
+        iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT &&
+        iptables -A OUTPUT -d 127.0.0.0/8 -j ACCEPT &&
+        for subnet in $$(ip -o route show scope link | awk '{print $$1}'); do
+          iptables -A OUTPUT -d "$$subnet" -j ACCEPT;
+        done &&
+        exec bash start.sh
     volumes:
       - avexie:/app/backend/data
     depends_on:
@@ -22,17 +38,23 @@ services:
       - ${AVEXIE_PORT-3000}:8080
     environment:
       - 'OLLAMA_BASE_URL=http://ollama:11434'
+      - 'ENABLE_OPENAI_API=false'
+      - 'ENABLE_VERSION_UPDATE_CHECK=false'
+      - 'VECTOR_DB=chroma'
+      - 'CONTENT_EXTRACTION_ENGINE=local_ocr'
+      - 'SCARF_NO_ANALYTICS=true'
+      - 'DO_NOT_TRACK=true'
+      - 'ANONYMIZED_TELEMETRY=false'
       - 'WEBUI_SECRET_KEY='
       # --- BEGIN: sandbox (Judge0) — Codex ---
       - 'JUDGE0_URL=http://judge0:2358'
       # --- END: sandbox ---
     # --- BEGIN: sandbox (Judge0) — Codex ---
     networks:
-      - default
+      - host_ingress
+      - sovereign_internal
       - judge0_internal
     # --- END: sandbox ---
-    extra_hosts:
-      - host.docker.internal:host-gateway
     restart: unless-stopped
 
   # --- BEGIN: sandbox (Judge0) — Codex ---
@@ -161,6 +183,13 @@ volumes:
 
 # --- BEGIN: sandbox (Judge0) — Codex ---
 networks:
+  # Host-visible bridge without source NAT: inbound port publishing works, but
+  # containers cannot use this network as an Internet egress path.
+  host_ingress:
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: 'false'
+  sovereign_internal:
+    internal: true
   judge0_internal:
     internal: true
 # --- END: sandbox ---

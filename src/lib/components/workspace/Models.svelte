@@ -88,6 +88,7 @@
 
 	let page = 1;
 	let models = null;
+	let routedModels: any[] = [];
 	let total = null;
 
 	let searchDebounceTimer;
@@ -402,6 +403,11 @@
 
 		let groups = await getGroups(localStorage.token);
 		groupIds = groups.map((group) => group.id);
+		routedModels = await fetch(`${WEBUI_API_BASE_URL}/models/routed`, {
+			headers: { Authorization: `Bearer ${localStorage.token}` }
+		})
+			.then((response) => (response.ok ? response.json() : []))
+			.catch(() => []);
 
 		await tick();
 		loaded = true;
@@ -509,6 +515,31 @@
 			reader.readAsText(importFiles[0]);
 		}}
 	/>
+
+	{#if routedModels.length > 0}
+		<section class="mb-5 rounded-xl border border-gray-200 p-4 dark:border-gray-800">
+			<div class="mb-3 flex items-center justify-between">
+				<div>
+					<h2 class="text-sm font-medium">Available routed Ollama models</h2>
+					<p class="text-xs text-gray-500">Profiles are generated locally from the live Ollama registry and update when models are added.</p>
+				</div>
+				<span class="rounded-full bg-emerald-100 px-2 py-1 text-xs text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-200">{routedModels.length} local</span>
+			</div>
+			<div class="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+				{#each routedModels as routed}
+					<div class="rounded-lg bg-gray-50 p-3 dark:bg-gray-900">
+						<div class="truncate text-sm font-medium" title={routed.id}>{routed.id}</div>
+						<div class="mt-1 text-xs text-gray-500">{routed.parameter_size} · {routed.quantization} · {routed.family}</div>
+						<div class="mt-2 flex flex-wrap gap-1">
+							{#each routed.routing_tags as tag}
+								<span class="rounded bg-blue-100 px-1.5 py-0.5 text-[0.65rem] text-blue-800 dark:bg-blue-900/40 dark:text-blue-200">{tag}</span>
+							{/each}
+						</div>
+					</div>
+				{/each}
+			</div>
+		</section>
+	{/if}
 
 	<div class="space-y-1">
 		<div class="flex h-8 flex-1 items-center w-full gap-2">

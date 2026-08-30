@@ -317,6 +317,11 @@
 		</Drawer>
 	{/if}
 {:else}
+	{#if $showAgenticIDE}
+		<div class="fixed inset-0 z-[100] h-[100dvh] w-screen bg-white dark:bg-gray-950">
+			<AgenticIDE {chatId} {submitPrompt} />
+		</div>
+	{:else}
 	<ResizableSidePanel
 		open={$showControls}
 		bind:width={controlsWidth}
@@ -448,4 +453,5 @@
 			</div>
 		</div>
 	</ResizableSidePanel>
+	{/if}
 {/if}

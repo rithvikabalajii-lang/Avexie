@@ -3544,6 +3544,7 @@
 			{
 				stream: stream,
 				model: model.id,
+				router_override: $settings?.modelRoutingOverride ?? false,
 				...(messages.length > 0 ? { messages } : {}),
 				params: {
 					...$settings?.params,

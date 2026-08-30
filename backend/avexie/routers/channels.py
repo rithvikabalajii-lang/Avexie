@@ -1000,6 +1000,14 @@ async def model_response_handler(request, channel, message, user, db=None):
 
     for mention in model_mentions.values():
         model_id = mention['id']
+        if model_id == 'agent':
+            model_id = next(
+                (candidate_id for candidate_id, candidate in MODELS.items() if candidate.get('owned_by') == 'ollama'),
+                None,
+            )
+            if not model_id:
+                log.warning('Channel @agent requested but no accessible local Ollama model is available')
+                continue
         model = MODELS.get(model_id, None)
 
         if model:

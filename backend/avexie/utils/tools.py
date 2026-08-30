@@ -98,6 +98,7 @@ from avexie.tools.builtin import (
 )
 # --- BEGIN: sandbox (Judge0) — Codex ---
 from avexie.tools.run_code import run_code
+from avexie.tools.documents import generate_word_document
 
 # --- END: sandbox ---
 from avexie.utils.access_control import has_access, has_connection_access, has_permission
@@ -690,6 +691,8 @@ async def get_builtin_tools(
     # code interpreter. A future Track A registry can register this same plain callable.
     if is_builtin_tool_enabled('sandbox'):
         builtin_functions.append(run_code)
+    if is_builtin_tool_enabled('documents'):
+        builtin_functions.append(generate_word_document)
     # --- END: sandbox ---
 
     # Notes tools - search, view, create, and update user's notes

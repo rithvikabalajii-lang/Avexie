@@ -40,6 +40,7 @@ RUN npm ci --force
 
 COPY . .
 ENV APP_BUILD_HASH=${BUILD_HASH}
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run build
 
 ######## WebUI backend ########
@@ -200,6 +201,13 @@ COPY --chown=$UID:$GID ./backend .
 # the broader, opt-in USE_PERMISSION_HARDENING below covers the rest of /app.
 RUN chgrp -R 0 /app/backend/avexie/static && \
     chmod -R g=u /app/backend/avexie/static
+
+# The sovereign compose profile removes the runtime default route before the
+# server starts. Keep the tiny routing utility in the final image so that this
+# is an enforceable network control, not merely an application setting.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends iproute2 iptables && \
+    rm -rf /var/lib/apt/lists/*
 
 EXPOSE 8080
 

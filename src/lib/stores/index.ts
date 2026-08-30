@@ -226,6 +226,7 @@ type OllamaModelDetails = {
 };
 
 type Settings = {
+	modelRoutingOverride?: boolean;
 	pinnedModels?: string[];
 	toolServers?: never[];
 	detectArtifacts?: boolean;

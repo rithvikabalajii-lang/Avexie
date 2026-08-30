@@ -2,12 +2,18 @@
 	import { getContext, onMount } from 'svelte';
 	import { toast } from 'svelte-sonner';
 	import JSZip from 'jszip';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
 	import CodeEditor from '$lib/components/common/CodeEditor.svelte';
 	import Badge from '$lib/components/common/Badge.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 	import Terminal from '$lib/components/icons/Terminal.svelte';
-	import { executeSandboxCode, type RunCodeResult } from '$lib/apis/sandbox';
+	import {
+		executeSandboxCode,
+		requestIdeEdits,
+		type IdeAgentResult,
+		type RunCodeResult
+	} from '$lib/apis/sandbox';
 	import { agenticIdeImport, showAgenticIDE, showControls } from '$lib/stores';
 	import {
 		createDefaultWorkspace,
@@ -49,8 +55,12 @@
 	let agentPrompt = '';
 	let agentSubmitting = false;
 	let fileInput: HTMLInputElement;
+	let folderInput: HTMLInputElement;
 	let activity: Activity[] = [];
 	let limits = { cpu_time: 2, wall_time: 5, memory_kb: 512000, max_processes: 16 };
+	let autoApplyEdits = false;
+	let pendingAgentResult: IdeAgentResult | null = null;
+	let sovereignty: { external_calls: number; mode: string } | null = null;
 
 	$: activeFile = workspace.files.find((file) => file.id === workspace.activeFileId) ?? null;
 	$: openFiles = workspace.openFileIds
@@ -202,7 +212,10 @@
 		const input = event.currentTarget as HTMLInputElement;
 		for (const selected of Array.from(input.files ?? [])) {
 			const content = await selected.text();
-			const existing = workspace.files.find((file) => file.path === selected.name);
+			const selectedPath = normalizeIdePath(
+				(selected as File & { webkitRelativePath?: string }).webkitRelativePath || selected.name
+			);
+			const existing = workspace.files.find((file) => file.path === selectedPath);
 			if (existing) {
 				commit({
 					...workspace,
@@ -212,7 +225,7 @@
 				});
 				openFile(existing.id);
 			} else {
-				addFile(selected.name, content);
+				addFile(selectedPath, content);
 			}
 		}
 		input.value = '';
@@ -268,14 +281,21 @@
 	const askAgent = async () => {
 		if (!agentPrompt.trim() || !activeFile || agentSubmitting) return;
 		const request = agentPrompt.trim();
-		const manifest = workspace.files.map((file) => file.path).join(', ');
-		const prompt = `Act as the coding agent for my AVEXIE IDE workspace.\n\nRequest: ${request}\n\nWorkspace files: ${manifest}\nActive file: ${activeFile.path}\n\n\`\`\`${activeFile.language}\n${activeFile.content}\n\`\`\`\n\nPropose the exact code change, use run_code to validate runnable code, and clearly identify the target file. Keep all execution inside the no-egress sandbox.`;
 		agentSubmitting = true;
-		addActivity('agent', 'Sent task to agent', request, 'running');
+		addActivity('agent', 'Routing IDE task locally', request, 'running');
 		agentPrompt = '';
 		try {
-			await submitPrompt(prompt, []);
-			addActivity('agent', 'Agent task submitted', activeFile.path, 'done');
+			const result = await requestIdeEdits(localStorage.token, {
+				prompt: request,
+				active_path: activeFile.path,
+				files: workspace.files.map(({ path, content }) => ({ path, content }))
+			});
+			if (autoApplyEdits) {
+				applyAgentEdits(result);
+			} else {
+				pendingAgentResult = result;
+			}
+			addActivity('agent', `Model: ${result.model}`, `${result.edits.length} edit(s) proposed`, 'done');
 		} catch (error) {
 			addActivity(
 				'agent',
@@ -286,6 +306,31 @@
 		} finally {
 			agentSubmitting = false;
 		}
+	};
+
+	const applyAgentEdits = (result: IdeAgentResult) => {
+		let nextFiles = [...workspace.files];
+		for (const edit of result.edits) {
+			const existing = nextFiles.find((file) => file.path === edit.path);
+			if (existing) {
+				nextFiles = nextFiles.map((file) =>
+					file.id === existing.id ? { ...file, content: edit.content } : file
+				);
+			} else {
+				nextFiles.push(createIdeFile(edit.path, edit.content));
+			}
+		}
+		const first = nextFiles.find((file) => file.path === result.edits[0]?.path);
+		commit({
+			...workspace,
+			files: nextFiles,
+			activeFileId: first?.id ?? workspace.activeFileId,
+			openFileIds: first && !workspace.openFileIds.includes(first.id)
+				? [...workspace.openFileIds, first.id]
+				: workspace.openFileIds
+		});
+		pendingAgentResult = null;
+		addActivity('agent', 'Applied agent edits', `${result.edits.length} file(s)`, 'done');
 	};
 
 	const applyToolImport = (incoming: {
@@ -338,6 +383,12 @@
 		workspace =
 			parseWorkspace(localStorage.getItem(loadedWorkspaceKey)) ?? createDefaultWorkspace();
 		persist();
+		fetch(`${WEBUI_API_BASE_URL}/sandbox/sovereignty`, {
+			headers: { Authorization: `Bearer ${localStorage.token}` }
+		})
+			.then((response) => (response.ok ? response.json() : null))
+			.then((value) => (sovereignty = value))
+			.catch(() => (sovereignty = null));
 
 		const unsubscribe = agenticIdeImport.subscribe((incoming) => {
 			if (!incoming) return;
@@ -384,7 +435,7 @@
 				<div class="truncate text-sm font-medium">Agentic IDE</div>
 				<div class="flex items-center gap-1.5 text-[0.65rem] text-gray-500 dark:text-gray-400">
 					<span class="size-1.5 rounded-full bg-emerald-500"></span>
-					Judge0 · no egress · autosaved
+					Judge0 · no egress · autosaved{sovereignty ? ` · network monitor: ${sovereignty.external_calls} external` : ''}
 				</div>
 			</div>
 		</div>
@@ -456,9 +507,22 @@
 						on:click={() => fileInput.click()}
 						aria-label="Import files">↥</button
 					>
+					<button
+						class="flex size-6 items-center justify-center rounded text-xs text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-800"
+						on:click={() => folderInput.click()}
+						aria-label="Import local folder">▣</button
+					>
 				</div>
 			</div>
 			<input bind:this={fileInput} class="hidden" type="file" multiple on:change={importFiles} />
+			<input
+				bind:this={folderInput}
+				class="hidden"
+				type="file"
+				multiple
+				webkitdirectory={true}
+				on:change={importFiles}
+			/>
 			<div class="px-2 pb-2">
 				<input
 					bind:value={explorerQuery}
@@ -691,11 +755,16 @@
 				on:submit|preventDefault={askAgent}
 			>
 				<div class="min-w-0 flex-1">
+					<div class="mb-1 flex items-center justify-between gap-2">
 					<label
 						for="agentic-ide-prompt"
-						class="mb-1 block text-[0.65rem] font-medium uppercase tracking-wide text-gray-500"
+						class="block text-[0.65rem] font-medium uppercase tracking-wide text-gray-500"
 						>Ask the agent about {activeFile?.path ?? 'this workspace'}</label
 					>
+					<label class="flex items-center gap-1 text-[0.65rem] text-gray-500">
+						<input type="checkbox" bind:checked={autoApplyEdits} /> Auto-apply edits
+					</label>
+					</div>
 					<textarea
 						id="agentic-ide-prompt"
 						bind:value={agentPrompt}
@@ -719,6 +788,34 @@
 			</form>
 		</main>
 	</div>
+
+	{#if pendingAgentResult}
+		<div class="absolute inset-0 z-30 flex items-center justify-center bg-black/45 p-6">
+			<div class="flex max-h-[88%] w-full max-w-4xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl dark:bg-gray-900">
+				<div class="flex items-center justify-between border-b border-gray-200 px-4 py-3 dark:border-gray-700">
+					<div>
+						<div class="text-sm font-medium">Review local agent edits</div>
+						<div class="text-xs text-gray-500">Model: {pendingAgentResult.model} · external calls: {pendingAgentResult.network.external_calls}</div>
+					</div>
+					<button class="text-gray-500" on:click={() => (pendingAgentResult = null)}>×</button>
+				</div>
+				<div class="min-h-0 flex-1 overflow-auto p-4">
+					{#each pendingAgentResult.edits as edit}
+						{@const oldContent = workspace.files.find((file) => file.path === edit.path)?.content ?? ''}
+						<div class="mb-4 overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+							<div class="bg-gray-100 px-3 py-2 font-mono text-xs dark:bg-gray-800">{edit.path}</div>
+							{#if oldContent}<pre class="max-h-48 overflow-auto whitespace-pre-wrap bg-red-50 p-3 text-xs text-red-800 dark:bg-red-950/40 dark:text-red-200">{oldContent.split('\n').map((line) => `- ${line}`).join('\n')}</pre>{/if}
+							<pre class="max-h-48 overflow-auto whitespace-pre-wrap bg-green-50 p-3 text-xs text-green-800 dark:bg-green-950/40 dark:text-green-200">{edit.content.split('\n').map((line) => `+ ${line}`).join('\n')}</pre>
+						</div>
+					{/each}
+				</div>
+				<div class="flex justify-end gap-2 border-t border-gray-200 p-3 dark:border-gray-700">
+					<button class="rounded-lg px-3 py-2 text-xs" on:click={() => (pendingAgentResult = null)}>Reject</button>
+					<button class="rounded-lg bg-blue-600 px-3 py-2 text-xs font-medium text-white" on:click={() => pendingAgentResult && applyAgentEdits(pendingAgentResult)}>Approve edits</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if overlay}<div class="absolute inset-0 z-20"></div>{/if}
 </div>

@@ -41,6 +41,8 @@ from avexie.utils.access_control.files import has_access_to_file
 from avexie.utils.auth import get_admin_user, get_verified_user
 from avexie.utils.chat_variables import get_chat_variables_schema
 from avexie.utils.models import get_all_models
+from avexie.utils.models import check_model_access
+from avexie.router.filter import analyze_model
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -126,6 +128,25 @@ async def _verify_knowledge_file_access(
 
 
 PAGE_ITEM_COUNT = 30
+
+
+@router.get('/routed')
+async def get_routed_ollama_models(request: Request, user=Depends(get_verified_user)):
+    """Return live local Ollama models with router-generated task profiles."""
+    if not request.app.state.MODELS:
+        await get_all_models(request, user=user)
+    live = dict(getattr(request.app.state, 'OLLAMA_MODELS', {}) or {})
+    result = []
+    for model_id, entry in live.items():
+        model = request.app.state.MODELS.get(model_id)
+        if not model:
+            continue
+        try:
+            await check_model_access(user, model)
+        except Exception:
+            continue
+        result.append(analyze_model(model_id, entry))
+    return sorted(result, key=lambda item: item['id'])
 
 
 @router.get(

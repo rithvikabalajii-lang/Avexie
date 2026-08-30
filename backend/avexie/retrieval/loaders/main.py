@@ -297,6 +297,69 @@ class DoclingLoader:
             raise Exception(f'Error calling Docling: {error_msg}')
 
 
+class LocalOCRLoader:
+    """Offline OCR for images and image-only PDF pages using RapidOCR/ONNX."""
+
+    def __init__(self, file_path: str, is_pdf: bool = False):
+        self.file_path = file_path
+        self.is_pdf = is_pdf
+
+    @staticmethod
+    def _extract_text(result) -> str:
+        texts = getattr(result, 'txts', None)
+        if texts:
+            return '\n'.join(str(text) for text in texts if text)
+        payload = result[0] if isinstance(result, tuple) and result else result
+        if isinstance(payload, list):
+            extracted = []
+            for item in payload:
+                if isinstance(item, (list, tuple)) and len(item) >= 2:
+                    extracted.append(str(item[1]))
+                elif isinstance(item, dict) and item.get('text'):
+                    extracted.append(str(item['text']))
+            return '\n'.join(extracted)
+        return ''
+
+    def load(self) -> list[Document]:
+        from rapidocr import RapidOCR
+
+        engine = RapidOCR()
+        if not self.is_pdf:
+            text = self._extract_text(engine(self.file_path))
+            return [
+                Document(
+                    page_content=text,
+                    metadata={'source': self.file_path, 'extraction_engine': 'rapidocr-local'},
+                )
+            ]
+
+        from pypdfium2 import PdfDocument
+
+        native_pages = PyPDFLoader(self.file_path, mode='page').load()
+        pdf = PdfDocument(self.file_path)
+        documents = []
+        for page_index in range(len(pdf)):
+            native_text = native_pages[page_index].page_content if page_index < len(native_pages) else ''
+            if len(native_text.strip()) >= 20:
+                text = native_text
+                engine_name = 'pypdf-local'
+            else:
+                image = pdf[page_index].render(scale=2.0).to_pil()
+                text = self._extract_text(engine(image))
+                engine_name = 'rapidocr-local'
+            documents.append(
+                Document(
+                    page_content=text,
+                    metadata={
+                        'source': self.file_path,
+                        'page': page_index,
+                        'extraction_engine': engine_name,
+                    },
+                )
+            )
+        return documents
+
+
 class Loader:
     def __init__(self, engine: str = '', **kwargs):
         self.engine = engine
@@ -497,7 +560,11 @@ class Loader:
                     if uncompressed_size > max_bytes:
                         raise ValueError('Document archive is too large after decompression')
 
-        if self.engine == 'tika' and self.kwargs.get('TIKA_SERVER_URL'):
+        if self.engine == 'local_ocr' and (
+            file_ext == 'pdf' or file_ext in {'png', 'jpg', 'jpeg', 'webp', 'bmp', 'tif', 'tiff'}
+        ):
+            loader = LocalOCRLoader(file_path, is_pdf=file_ext == 'pdf')
+        elif self.engine == 'tika' and self.kwargs.get('TIKA_SERVER_URL'):
             if self._is_text_file(file_ext, file_content_type):
                 loader = TextLoader(file_path, encoding=self._detect_text_encoding(file_path))
             else:

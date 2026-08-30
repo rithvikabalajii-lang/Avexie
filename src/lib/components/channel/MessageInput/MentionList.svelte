@@ -151,11 +151,7 @@
 			];
 		} else {
 			if (modelSuggestions) {
-				_models = [
-					...$models
-						.filter((m) => !m?.direct)
-						.map((m) => ({ type: 'model', id: m.id, label: m.name, data: m }))
-				];
+				_models = [{ type: 'model', id: 'agent', label: 'Agent', data: { name: 'Agent' } }];
 			}
 		}
 
