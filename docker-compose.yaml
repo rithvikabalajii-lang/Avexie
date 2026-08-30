@@ -3,18 +3,26 @@ services:
     volumes:
       - ollama:/root/.ollama
     container_name: ollama
-    pull_policy: always
+    # Demo/runtime startup is air-gap safe. Preload images and models during
+    # installation; never contact a registry when starting the sovereign stack.
+    pull_policy: never
     tty: true
     restart: unless-stopped
     image: ollama/ollama:${OLLAMA_DOCKER_TAG-latest}
     networks:
       - sovereign_internal
+    healthcheck:
+      test: ['CMD', 'ollama', 'list']
+      interval: 5s
+      timeout: 5s
+      retries: 12
 
   avexie:
     build:
       context: .
       dockerfile: Dockerfile
     image: ghcr.io/avexie/avexie:${WEBUI_DOCKER_TAG-main}
+    pull_policy: never
     container_name: avexie
     cap_add:
       - NET_ADMIN
@@ -33,7 +41,10 @@ services:
     volumes:
       - avexie:/app/backend/data
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
+      judge0:
+        condition: service_started
     ports:
       - ${AVEXIE_PORT-3000}:8080
     environment:
@@ -62,6 +73,7 @@ services:
   # --- BEGIN: sandbox (Judge0) — Codex ---
   judge0:
     image: judge0/judge0:1.13.1
+    pull_policy: never
     container_name: avexie-judge0
     privileged: true
     expose:
@@ -117,6 +129,7 @@ services:
 
   judge0-worker:
     image: judge0/judge0:1.13.1
+    pull_policy: never
     container_name: avexie-judge0-worker
     command: ['./scripts/workers']
     privileged: true
@@ -135,6 +148,7 @@ services:
 
   judge0-db:
     image: postgres:16.2
+    pull_policy: never
     container_name: avexie-judge0-db
     environment:
       POSTGRES_DB: judge0
@@ -156,6 +170,7 @@ services:
 
   judge0-redis:
     image: redis:7.2.4
+    pull_policy: never
     container_name: avexie-judge0-redis
     command:
       - bash
