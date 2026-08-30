@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 class RouteDecision(TypedDict):
-    lane: Literal["reasoning", "coding", "vision", "extraction", "summarization", "general"]
+    lane: Literal["agentic", "reasoning", "coding", "vision", "extraction", "summarization", "general"]
     model_tag: str          # live model_id as returned by Ollama /api/tags
     signal: str             # human-readable debug string — do NOT parse programmatically
     confidence: Literal["deterministic", "local-llm"]
@@ -102,12 +102,21 @@ _EXTRACT_RE    = re.compile(
     r"return json|return a dict|return a list)\b", re.I
 )
 _SUMMARIZE_RE  = re.compile(r"\b(summarize|summary|tl;?dr|tldr|briefly|in a nutshell|what is the gist)\b", re.I)
+_AGENTIC_RE = re.compile(
+    r"\b(create|make|generate|save|export|edit|update|append|read|run|execute|test|verify)\b"
+    r".{0,80}\b(document|docx|word file|powerpoint|pptx|presentation|slide deck|excel|xlsx|"
+    r"spreadsheet|workbook|file|source code|script|sandbox)\b",
+    re.I | re.S,
+)
 
 # Rough token estimate (1 token ~= 4 chars)
 _LONG_PROMPT_CHARS = 500 * 4  # ~500 tokens
 
 def _classify_intent(text: str) -> str:
-    """Return one of: coding, reasoning, extraction, summarization, general."""
+    """Return the deterministic task lane, including explicit tool-driven work."""
+    if _AGENTIC_RE.search(text):
+        return "agentic"
+
     if (
         _CODE_BLOCK_RE.search(text)
         or _STACK_TRACE_RE.search(text)
@@ -130,11 +139,22 @@ def _classify_intent(text: str) -> str:
 
 
 async def _classify_with_local_model(text: str, available: dict) -> str | None:
-    """Use the smallest installed Ollama model as the lightweight router."""
+    """Use the smallest general-purpose Ollama model as the lightweight router.
+
+    Vision and code specialists are deliberately excluded: a tiny vision model
+    is not a reliable text classifier and must never route ordinary chat back to
+    itself merely because it is the smallest installed model.
+    """
     if not text.strip() or not available or os.getenv("PYTEST_CURRENT_TEST"):
         return None
+    general_models = [
+        pair for pair in available.items()
+        if _capability(pair[0], (pair[1].get("details") or {}).get("family", "")) == "general"
+    ]
+    if not general_models:
+        return None
     candidates = sorted(
-        available.items(),
+        general_models,
         key=lambda pair: _parse_param_size((pair[1].get("details") or {}).get("parameter_size")),
     )
     classifier_id = candidates[0][0]
@@ -294,17 +314,22 @@ async def model_router_filter(
 
     is_long_prompt = len(last_user_text) > _LONG_PROMPT_CHARS
 
-    # Step 2: Classify intent
+    # Step 2: Deterministic hard signals win. The lightweight model is only
+    # consulted for genuinely ambiguous general-language prompts.
     used_local_classifier = False
     if has_media:
         intent = "vision"
     else:
-        intent = await _classify_with_local_model(last_user_text, available)
-        used_local_classifier = intent is not None
-        intent = intent or _classify_intent(last_user_text)
+        intent = _classify_intent(last_user_text)
+        if intent == "general":
+            classified_intent = await _classify_with_local_model(last_user_text, available)
+            if classified_intent:
+                intent = classified_intent
+                used_local_classifier = True
 
     # Step 3: Narrow candidates by inferred capability
     intent_to_capability = {
+        "agentic":      "general",
         "vision":        "vision",
         "coding":        "coding",
         "reasoning":     "reasoning",
@@ -327,9 +352,14 @@ async def model_router_filter(
     signal_prefix = f"capability={target_capability}"
 
     if not candidates:
-        # Step 3 fallback: no matching capability model -> use full set
+        # Specialist lanes fall back to a general model, never to an unrelated
+        # specialist such as a vision model for code/reasoning work.
+        candidates = [c for c in all_candidates if c["capability"] == "general"]
+        signal_prefix = f"capability=general_fallback(no_{target_capability})"
+
+    if not candidates:
         candidates = all_candidates
-        signal_prefix = f"capability=fallback(no_{target_capability})"
+        signal_prefix = f"capability=last_resort(no_{target_capability})"
 
     if not candidates:
         # Step 5 early exit: registry is empty
@@ -346,7 +376,7 @@ async def model_router_filter(
         return _apply_decision(body, extra_params, decision, request, model, available, default_model_id)
 
     # Step 4: Tie-break by parameter_size
-    heavy = intent in ("coding", "reasoning") or is_long_prompt
+    heavy = intent in ("agentic", "coding", "reasoning") or is_long_prompt
     candidates_sorted = sorted(candidates, key=lambda c: c["param_size"], reverse=heavy)
     chosen_id = candidates_sorted[0]["id"]
 

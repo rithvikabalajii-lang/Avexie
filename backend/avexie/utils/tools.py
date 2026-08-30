@@ -99,12 +99,18 @@ from avexie.tools.builtin import (
 # --- BEGIN: sandbox (Judge0) — Codex ---
 from avexie.tools.run_code import run_code
 from avexie.tools.documents import (
+    append_powerpoint_slide,
+    append_to_word_document,
+    create_excel_workbook,
     create_local_text_file,
+    create_powerpoint_presentation,
+    create_word_document,
     edit_local_text_file,
-    generate_word_document,
     list_local_files,
+    read_office_document,
     read_local_text_file,
     share_local_file,
+    update_excel_cells,
 )
 
 # --- END: sandbox ---
@@ -699,7 +705,17 @@ async def get_builtin_tools(
     if is_builtin_tool_enabled('sandbox'):
         builtin_functions.append(run_code)
     if is_builtin_tool_enabled('documents'):
-        builtin_functions.append(generate_word_document)
+        builtin_functions.extend(
+            [
+                create_word_document,
+                create_powerpoint_presentation,
+                create_excel_workbook,
+                read_office_document,
+                append_to_word_document,
+                append_powerpoint_slide,
+                update_excel_cells,
+            ]
+        )
     if is_builtin_tool_enabled('files') and await has_user_chat_permission('file_upload'):
         builtin_functions.extend(
             [

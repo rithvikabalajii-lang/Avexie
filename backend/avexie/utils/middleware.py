@@ -3043,6 +3043,40 @@ async def process_chat_payload(request, form_data, user, metadata, model):
 
         if tools_dict:
             native_tool_policy = []
+            native_tool_policy.append(
+                'Tool use is action, not conversation. Before writing the answer, check whether the user '
+                'asked you to create, save, export, read, edit, calculate, execute, or verify something. '
+                'If an available tool performs that action, call it. Do not describe how the user could do '
+                'it and do not substitute a code sample for the actual tool call. After a successful call, '
+                'give the returned local file link or result.'
+            )
+
+            prompt_lower = (prompt or '').lower()
+            office_tool_hint = None
+            if any(term in prompt_lower for term in ('powerpoint', 'pptx', 'slide deck', 'presentation')):
+                office_tool_hint = (
+                    'append_powerpoint_slide'
+                    if any(term in prompt_lower for term in ('edit', 'update', 'append', 'add a slide'))
+                    else 'create_powerpoint_presentation'
+                )
+            elif any(term in prompt_lower for term in ('excel', 'xlsx', 'spreadsheet', 'workbook')):
+                office_tool_hint = (
+                    'update_excel_cells'
+                    if any(term in prompt_lower for term in ('edit', 'update', 'change cell', 'formula'))
+                    else 'create_excel_workbook'
+                )
+            elif any(term in prompt_lower for term in ('word document', 'docx', 'approval note', 'word file')):
+                office_tool_hint = (
+                    'append_to_word_document'
+                    if any(term in prompt_lower for term in ('edit', 'update', 'append', 'add to'))
+                    else 'create_word_document'
+                )
+            if office_tool_hint and office_tool_hint in tools_dict:
+                native_tool_policy.append(
+                    f'This request explicitly maps to `{office_tool_hint}`. You MUST call that tool '
+                    'with complete content before responding. A textual draft alone is not completion.'
+                )
+
             if 'query_knowledge_files' in tools_dict:
                 native_tool_policy.append(
                     'Knowledge retrieval is selective. Call query_knowledge_files only when the request '
@@ -3058,10 +3092,18 @@ async def process_chat_payload(request, form_data, user, metadata, model):
                     'after real work occurs, and do not mark unexecuted work complete. Include verification '
                     'as the final step. Do not create a checklist for simple conversational answers.'
                 )
-            if any(name in tools_dict for name in (
-                'run_code', 'generate_word_document', 'create_local_text_file',
-                'read_local_text_file', 'edit_local_text_file',
-            )):
+            if any(
+                name in tools_dict
+                for name in (
+                    'run_code',
+                    'create_word_document',
+                    'create_powerpoint_presentation',
+                    'create_excel_workbook',
+                    'create_local_text_file',
+                    'read_local_text_file',
+                    'edit_local_text_file',
+                )
+            ):
                 native_tool_policy.append(
                     'Use available local tools automatically when they are needed to complete the request; '
                     'the user does not need to enable an agentic mode. Never say a file, code run, or artifact '

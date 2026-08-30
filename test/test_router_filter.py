@@ -173,6 +173,12 @@ class TestIntentClassification:
     def test_summarize(self):
         assert _classify_intent("Summarize this article for me") == "summarization"
 
+    def test_document_creation_is_agentic(self):
+        assert _classify_intent("Create a Word document with these findings") == "agentic"
+
+    def test_sandbox_execution_is_agentic(self):
+        assert _classify_intent("Run this script in the sandbox") == "agentic"
+
     def test_tldr(self):
         assert _classify_intent("tl;dr this for me") == "summarization"
 
@@ -304,6 +310,25 @@ async def test_step4_general_prefers_smallest():
     assert decision["lane"] == "general"
     # Smallest general model: llama3:8b (8B) vs llama3:70b (70B)
     assert new_body["model"] == "llama3:8b"
+
+
+@pytest.mark.asyncio
+async def test_agentic_work_prefers_largest_general_model_and_excludes_vision():
+    registry = {
+        **REGISTRY_WITH_SIZES,
+        "moondream:latest": {
+            "model": "moondream:latest",
+            "details": {"family": "moondream", "parameter_size": "1.8B"},
+        },
+    }
+    req = mock_request(registry)
+    body = simple_body("Create a Word document with the inspection findings")
+    ep = extra()
+
+    new_body, _ = await model_router_filter(req, body, None, {"id": "moondream:latest"}, ep)
+
+    assert ep["__route_decision__"]["lane"] == "agentic"
+    assert new_body["model"] == "llama3:70b"
 
 
 @pytest.mark.asyncio

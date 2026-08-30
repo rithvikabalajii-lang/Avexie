@@ -69,12 +69,17 @@
 			if (idType === 'U') {
 				// User
 			} else if (idType === 'M') {
-				// Model
-				const model = $models.find((m) => m.id === id);
-				if (model) {
-					label = model.name;
+				// @agent is a stable virtual identity that routes to a local model.
+				// It is intentionally not present in the physical model registry.
+				if (id === 'agent') {
+					label = token?.label || 'Agent';
 				} else {
-					label = $i18n.t('Unknown');
+					const model = $models.find((m) => m.id === id);
+					if (model) {
+						label = model.name;
+					} else {
+						label = token?.label || $i18n.t('Unknown');
+					}
 				}
 			}
 		}
@@ -95,7 +100,9 @@
 						console.log('Clicked user mention', id);
 					} else if (idType === 'M') {
 						console.log('Clicked model mention', id);
-						await goto(`/?model=${id}`);
+						if (id !== 'agent') {
+							await goto(`/?model=${id}`);
+						}
 					}
 				} else if (triggerChar === '#') {
 					if (idType === 'C') {
