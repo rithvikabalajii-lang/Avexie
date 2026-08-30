@@ -4,15 +4,24 @@ import sharp from 'sharp';
 
 const root = path.resolve(import.meta.dirname, '..');
 
-const mark = (foreground = '#ffffff', background = '#111827') => Buffer.from(`
+const mark = (
+  foreground = '#f8fafc',
+  accent = '#c8a96b',
+  background = '#0b1220'
+) => Buffer.from(`
 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
   <rect x="36" y="36" width="440" height="440" rx="112" fill="${background}"/>
-  <path d="M142 402 L256 112 L370 402 M184 306 H328" fill="none"
-        stroke="${foreground}" stroke-width="64" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M108 382 L202 130 L292 382 M150 292 H251" fill="none"
+        stroke="${foreground}" stroke-width="43" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M304 146 L404 366 M404 146 L304 366" fill="none"
+        stroke="${accent}" stroke-width="43" stroke-linecap="round"/>
 </svg>`);
 
 async function png(size, dark = false) {
-  return sharp(dark ? mark('#111827', '#ffffff') : mark()).resize(size, size).png().toBuffer();
+  return sharp(dark ? mark('#0b1220', '#8a6b35', '#f8fafc') : mark())
+    .resize(size, size)
+    .png()
+    .toBuffer();
 }
 
 function icoFromPng(image) {
