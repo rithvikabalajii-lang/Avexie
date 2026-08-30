@@ -147,6 +147,7 @@ from avexie.routers import (
     skills,
     tasks,
     terminals,
+    toaa,
     tools,
     users,
     utils,
@@ -760,6 +761,7 @@ app.include_router(functions.router, prefix='/api/v1/functions', tags=['function
 app.include_router(evaluations.router, prefix='/api/v1/evaluations', tags=['evaluations'])
 app.include_router(utils.router, prefix='/api/v1/utils', tags=['utils'])
 app.include_router(terminals.router, prefix='/api/v1/terminals', tags=['terminals'])
+app.include_router(toaa.router, prefix='/api/v1/toaa/audits', tags=['toaa'])
 # --- BEGIN: sandbox (Judge0) — Codex ---
 app.include_router(sandbox.router, prefix='/api/v1/sandbox', tags=['sandbox'])
 # --- END: sandbox ---

@@ -5,7 +5,7 @@ from typing import Optional
 
 from avexie.internal.db import Base, JSONField, get_async_db_context
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import BigInteger, Boolean, Column, Text, select, update
+from sqlalchemy import BigInteger, Boolean, Column, Text, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 log = logging.getLogger(__name__)
@@ -154,6 +154,60 @@ class ToaaAuditTable:
                 .order_by(ToaaAuditRecord.created_at.asc())
             )
             return [ToaaAuditRecordModel.model_validate(r) for r in result.scalars().all()]
+
+    async def get_admin_page(
+        self,
+        *,
+        user_id: str | None = None,
+        status: str | None = None,
+        query: str | None = None,
+        offset: int = 0,
+        limit: int = 50,
+        db: Optional[AsyncSession] = None,
+    ) -> dict:
+        """Return a newest-first, filtered page for the admin audit console."""
+        async with get_async_db_context(db) as db:
+            base_filters = []
+            if user_id:
+                base_filters.append(ToaaAuditRecord.user_id == user_id)
+            if query:
+                pattern = f'%{query.strip()}%'
+                base_filters.append(
+                    or_(
+                        ToaaAuditRecord.tool_name.ilike(pattern),
+                        ToaaAuditRecord.session_id.ilike(pattern),
+                        ToaaAuditRecord.error_detail.ilike(pattern),
+                    )
+                )
+
+            filters = list(base_filters)
+            if status:
+                filters.append(ToaaAuditRecord.status == status)
+
+            total = (
+                await db.execute(
+                    select(func.count(ToaaAuditRecord.id)).where(*filters)
+                )
+            ).scalar_one()
+            rows = await db.execute(
+                select(ToaaAuditRecord)
+                .where(*filters)
+                .order_by(ToaaAuditRecord.created_at.desc())
+                .offset(max(0, offset))
+                .limit(max(1, min(limit, 100)))
+            )
+            status_rows = await db.execute(
+                select(ToaaAuditRecord.status, func.count(ToaaAuditRecord.id))
+                .where(*base_filters)
+                .group_by(ToaaAuditRecord.status)
+            )
+            summary = {'pending': 0, 'success': 0, 'error': 0, 'blocked': 0}
+            summary.update({row_status: count for row_status, count in status_rows.all()})
+            return {
+                'items': [ToaaAuditRecordModel.model_validate(row) for row in rows.scalars().all()],
+                'total': total,
+                'summary': summary,
+            }
 
 
 ToaaAudit = ToaaAuditTable()

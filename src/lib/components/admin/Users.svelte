@@ -10,6 +10,7 @@
 
 	import UserList from './Users/UserList.svelte';
 	import Groups from './Users/Groups.svelte';
+	import AuditLogs from './Users/AuditLogs.svelte';
 
 	const i18n = getContext('i18n');
 
@@ -17,7 +18,7 @@
 	$: {
 		const pathParts = $page.url.pathname.split('/');
 		const tabFromPath = pathParts[pathParts.length - 1];
-		selectedTab = ['overview', 'groups'].includes(tabFromPath) ? tabFromPath : 'overview';
+		selectedTab = ['overview', 'groups', 'audit'].includes(tabFromPath) ? tabFromPath : 'overview';
 	}
 
 	$: if (selectedTab) {
@@ -105,6 +106,18 @@
 			</a>
 
 			<a
+				id="audit"
+				href="/admin/users/audit"
+				draggable="false"
+				class="px-0.5 py-1 min-w-fit rounded-lg lg:flex-none flex items-center gap-1.5 text-right transition select-none {selectedTab ===
+				'audit'
+					? ''
+					: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
+			>
+				<div class="self-center">{$i18n.t('Agent Audit')}</div>
+			</a>
+
+			<a
 				id="groups"
 				href="/admin/users/groups"
 				draggable="false"
@@ -125,6 +138,8 @@
 		<div class="flex-1 px-3.5 lg:pr-[1rem] lg:pl-0 overflow-y-scroll">
 			{#if selectedTab === 'overview'}
 				<UserList />
+			{:else if selectedTab === 'audit'}
+				<AuditLogs />
 			{:else if selectedTab === 'groups'}
 				<Groups />
 			{/if}
